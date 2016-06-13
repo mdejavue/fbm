@@ -50,33 +50,69 @@ sap.ui.define(['jquery.sap.global', 'sap/ui/model/ClientModel', 'sap/ui/model/Co
 	 *
 	 * @public
 	 */
-	FirebaseModel.prototype.addRef = function(sRef,bIsNode){
+	FirebaseModel.prototype.addRef = function(sRef,bIsNode,aFilters){
 
 		var that = this;	
 		if (!bIsNode) {	
 			firebase.database().ref(sRef).on('value', function(snapshot) {
-				that.oData[sRef] = snapshot.val();
+				var oResolve = that._resolveObject(sRef, snapshot.val());
+				that.oData[oResolve.anchor] = $.extend(true,that.oData[oResolve.anchor],oResolve.object);
 				that.checkUpdate();
 			});
 		} 
-		else {
-			this.oData[sRef] = {};
-			firebase.database().ref(sRef).on('child_changed', function(data) {
-				that.oData[sRef][data.key] = data.val();
+		else {			
+			var oRef;
+
+			if (aFilters) {
+				var oFilter = aFilters[0];
+				oRef = firebase.database().ref(sRef).orderByChild(oFilter.sPath).equalTo(oFilter.oValue1);
+			} else {
+				oRef = firebase.database().ref(sRef);
+			}
+			oRef.on('child_changed', function(data) {
+				var oResolve = that._resolveObject(sRef, data.val());
+				that.oData[oResolve.anchor] = $.extend(true,that.oData[oResolve.anchor],oResolve.object);
 				that.checkUpdate();
 			});
-			firebase.database().ref(sRef).on('child_added', function(data) {
-				that.oData[sRef][data.key] = data.val();
+			oRef.on('child_added', function(data) {
+				var oResolve = that._resolveObject(sRef, data.val());
+				that.oData[oResolve.anchor] = $.extend(true,that.oData[oResolve.anchor],oResolve.object);
 				that.checkUpdate();
 			});
-			firebase.database().ref(sRef).on('child_removed', function(data) {
-				that.oData[sRef][data.key] = null;
+			oRef.on('child_removed', function(data) {
+				var oResolve = that._resolveObject(sRef, null);
+				that.oData[oResolve.anchor] = $.extend(true,that.oData[oResolve.anchor],oResolve.object);
 				that.checkUpdate();
 			});
 		}
 	};
 
+	FirebaseModel.prototype._resolveObject = function(sRef, data) {
 
+		if (sRef.charAt(0) === "/")
+			sRef = sRef.substr(1);
+
+		var aSplit = sRef.split("/");
+		var oObject= data;
+		var oObject2 = {};
+
+		for ( var i = aSplit.length-1; i >= 1; i--) { // what to do with arrays
+			if (parseInt(aSplit[i]) >= 0) {
+				oObject = [oObject];
+				continue;
+			}
+			oObject2[aSplit[i]] = oObject;
+			oObject = oObject2;
+			oObject2 = {};
+		}
+
+		return { anchor: aSplit[0], object: oObject };
+	},
+
+
+	FirebaseModel.prototype.read = function(sRef) {
+		return firebase.database().ref(sRef).once('value');
+	},
 
 	FirebaseModel.prototype.loadData = function(sURL, oParameters, bAsync, sType, bMerge, bCache, mHeaders){
 		
@@ -98,8 +134,8 @@ sap.ui.define(['jquery.sap.global', 'sap/ui/model/ClientModel', 'sap/ui/model/Co
 	 *
 	 */
 	FirebaseModel.prototype.bindList = function(sPath, oContext, aSorters, aFilters, mParameters) {
-		this.addRef(this.resolve(sPath,oContext), true);
-		var oBinding = new JSONListBinding(this, sPath, oContext, aSorters, aFilters, mParameters);
+		this.addRef(this.resolve(sPath,oContext), true, aFilters);
+		var oBinding = new JSONListBinding(this, sPath, oContext, aSorters, null, mParameters);
 		return oBinding;
 	};
 	
@@ -119,6 +155,10 @@ sap.ui.define(['jquery.sap.global', 'sap/ui/model/ClientModel', 'sap/ui/model/Co
 		return true;
 	};
 
+	FirebaseModel.prototype.pushProperty = function(sPath, oValue, oContext, bAsyncUpdate) {
+		return firebase.database().ref(this.resolve(sPath, oContext)).push(oValue).key;
+	};
+
 	/**
 	* Returns the value for the property with the given <code>sPropertyName</code>
 	*
@@ -133,11 +173,30 @@ sap.ui.define(['jquery.sap.global', 'sap/ui/model/ClientModel', 'sap/ui/model/Co
 	};
 
 	FirebaseModel.prototype._getObject = function(sPath, oContext) {
-		return this.oData[this.resolve(sPath, oContext)];
+
+		var oNode = this.isLegacySyntax() ? this.oData : null;
+		if (oContext instanceof Context) {
+			oNode = this._getObject(oContext.getPath());
+		} else if (oContext) {
+			oNode = oContext;
+		}
+		if (!sPath) {
+			return oNode;
+		}
+		var aParts = sPath.split("/"),
+			iIndex = 0;
+		if (!aParts[0]) {
+			// absolute path starting with slash
+			oNode = this.oData;
+			iIndex++;
+		}
+		while (oNode && aParts[iIndex]) {
+			oNode = oNode[aParts[iIndex]];
+			iIndex++;
+		}
+		return oNode;
+		//return this.oData[this.resolve(sPath, oContext)];
 	};
-
-
-
 
 	FirebaseModel.prototype.isList = function(sPath, oContext) {
 		return jQuery.isArray(this._getObject(sPath, oContext));
